@@ -30,10 +30,11 @@ app.post('/scrape', async (req, res) => {
   try {
     const pageRes = await fetch(targetUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; BusinessBot/1.0)',
-        'Accept': 'text/html,application/xhtml+xml',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
       },
-      timeout: 10000,
+      timeout: 15000,
     });
     if (!pageRes.ok) return res.status(502).json({ error: `Could not fetch website (HTTP ${pageRes.status})` });
     const html = await pageRes.text();
@@ -41,9 +42,10 @@ app.post('/scrape', async (req, res) => {
       .replace(/<script[\s\S]*?<\/script>/gi, '')
       .replace(/<style[\s\S]*?<\/style>/gi, '')
       .replace(/<[^>]+>/g, ' ')
+      .replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
       .replace(/\s+/g, ' ')
       .trim()
-      .slice(0, 8000);
+      .slice(0, 6000);
   } catch (err) {
     return res.status(500).json({ error: 'Failed to fetch the website: ' + err.message });
   }
@@ -58,18 +60,55 @@ app.post('/scrape', async (req, res) => {
       },
       body: JSON.stringify({
         model: 'claude-haiku-4-5-20251001',
-        max_tokens: 1000,
+        max_tokens: 800,
+        system: 'You are a data extraction assistant. You always respond with only valid JSON and nothing else. No explanations, no markdown, no code fences. Just a raw JSON object.',
         messages: [{
           role: 'user',
-          content: `Extract business information from the website text below. Return ONLY a raw JSON object with these exact keys (use empty string if not found): {"name":"","type":"","description":"","hours":"","location":"","contact":"","faq":""}. No markdown, no backticks, just JSON.\n\nWebsite text:\n${text}`
+          content: `Read the website text below and extract business info into this exact JSON structure. Use empty string "" for any field you cannot find. Respond with ONLY the JSON object, nothing else.
+
+{
+  "name": "company name here",
+  "type": "industry or business type here",
+  "description": "2-3 sentence description of what they do",
+  "hours": "business hours here",
+  "location": "address or city/state here",
+  "contact": "phone and/or email here",
+  "faq": "any pricing, policies, or other useful info here"
+}
+
+Website text:
+${text}`
         }]
       })
     });
+
     const aiData = await aiRes.json();
-    const raw = aiData.content?.map(b => b.text || '').join('') || '';
-    const match = raw.match(/\{[\s\S]*\}/);
-    if (!match) return res.status(500).json({ error: 'AI could not parse business info.' });
-    const info = JSON.parse(match[0]);
+
+    if (aiData.error) {
+      return res.status(500).json({ error: 'Claude API error: ' + aiData.error.message });
+    }
+
+    const raw = (aiData.content || []).map(b => b.text || '').join('').trim();
+
+    // Try multiple ways to extract JSON
+    let info;
+    try {
+      // Direct parse first
+      info = JSON.parse(raw);
+    } catch {
+      // Try extracting from within the text
+      const match = raw.match(/\{[\s\S]*\}/);
+      if (!match) {
+        console.error('Raw AI response:', raw);
+        return res.status(500).json({ error: 'AI returned unexpected format. Raw: ' + raw.slice(0, 200) });
+      }
+      try {
+        info = JSON.parse(match[0]);
+      } catch (e) {
+        return res.status(500).json({ error: 'Could not parse JSON from AI response.' });
+      }
+    }
+
     res.json({ info, url: targetUrl });
   } catch (err) {
     res.status(500).json({ error: 'AI extraction failed: ' + err.message });
@@ -95,7 +134,7 @@ app.post('/chat', async (req, res) => {
       })
     });
     const data = await aiRes.json();
-    const reply = data.content?.map(b => b.text || '').join('') || 'Sorry, I could not respond.';
+    const reply = (data.content || []).map(b => b.text || '').join('') || 'Sorry, I could not respond.';
     res.json({ reply });
   } catch (err) {
     res.status(500).json({ error: 'Chat failed: ' + err.message });
