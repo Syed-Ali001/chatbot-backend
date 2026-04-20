@@ -1,18 +1,68 @@
-{
-  "name": "chatbot-scraper-backend",
-  "version": "1.0.0",
-  "description": "Backend proxy server for AI business chatbot URL scraping",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js"
-  },
-  "dependencies": {
-    "cors": "^2.8.5",
-    "express": "^4.18.2",
-    "node-fetch": "^3.3.2"
-  },
-  "engines": {
-    "node": ">=18.0.0"
+const express = require('express');
+const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...args));
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Explicit CORS — allow every origin including sandboxed iframes
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+
+app.use(express.json());
+
+// Health check
+app.get('/', (req, res) => {
+  res.json({ status: 'ok', message: 'Chatbot scraper backend is running.' });
+});
+
+// Scrape endpoint
+app.post('/scrape', async (req, res) => {
+  const { url } = req.body;
+
+  if (!url) {
+    return res.status(400).json({ error: 'No URL provided.' });
   }
-}
+
+  let targetUrl = url.trim();
+  if (!targetUrl.startsWith('http')) {
+    targetUrl = 'https://' + targetUrl;
+  }
+
+  try {
+    const response = await fetch(targetUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; BusinessBot/1.0)',
+        'Accept': 'text/html,application/xhtml+xml',
+      },
+      timeout: 10000,
+    });
+
+    if (!response.ok) {
+      return res.status(502).json({ error: `Could not fetch website (status ${response.status})` });
+    }
+
+    const html = await response.text();
+
+    // Strip tags, scripts, styles to get clean text
+    const text = html
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 8000); // limit to first 8000 chars
+
+    res.json({ text, url: targetUrl });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch the website: ' + err.message });
+  }
+});
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
